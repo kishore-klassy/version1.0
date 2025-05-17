@@ -1,93 +1,74 @@
-import streamlit as st
-import cv2
 import time
-import numpy as np
+import streamlit as st
 from ultralytics import YOLO
+import cv2
+import pygame
 
-# Streamlit setup
-st.set_page_config(page_title="YOLOv8 Mobile Detection", layout="centered")
-st.title("📱 Real-time Mobile Phone Detection with YOLOv8")
+# Initialize pygame only once
+pygame.mixer.init()
+pygame.mixer.music.load("warning-alarm.WAV")  # Make sure alarm.mp3 exists in folder
 
-# Load model
+# Load the model only once
 model = YOLO("yolov8n.pt")
 
-# Constants
-MOBILE_PHONE_CLASS_ID = 67
-DETECTION_THRESHOLD = 3  # seconds
+st.title("Mobile Phone Detection")
 
-# Session states
+# Initialize session state variables
 if "detecting" not in st.session_state:
     st.session_state.detecting = False
+if "detection_start_time" not in st.session_state:
+    st.session_state.detection_start_time = None
+if "alarm_playing" not in st.session_state:
+    st.session_state.alarm_playing = False
 
-# Flicker box container
-alert_box = st.empty()
+# Buttons to control detection
+if st.button("Start Detection"):
+    st.session_state.detecting = True
+    st.session_state.detection_start_time = None
 
-# Detection function
-def detect_mobile():
+if st.button("Stop Detection"):
+    st.session_state.detecting = False
+    st.session_state.detection_start_time = None
+    if st.session_state.alarm_playing:
+        pygame.mixer.music.stop()
+        st.session_state.alarm_playing = False
+
+stframe = st.empty()
+
+if st.session_state.detecting:
     cap = cv2.VideoCapture(0)
-    stframe = st.empty()
-    phone_detected_start = None
-
-    while st.session_state.detecting:
-        ret, frame = cap.read()
-        if not ret:
-            st.error("Webcam not accessible")
+    while cap.isOpened() and st.session_state.detecting:
+        success, frame = cap.read()
+        if not success:
+            st.warning("Cannot access webcam.")
             break
 
-        frame = cv2.flip(frame, 1)
-        results = model(frame, verbose=False)
-        phone_detected = False
+        results = model.predict(frame, conf=0.5)
+        annotated_frame = results[0].plot()
 
-        for r in results:
-            for box in r.boxes:
-                cls_id = int(box.cls[0].item())
-                if cls_id == MOBILE_PHONE_CLASS_ID:
-                    phone_detected = True
-                    x1, y1, x2, y2 = map(int, box.xyxy[0])
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                    cv2.putText(frame, "Mobile Phone", (x1, y1 - 10),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        detected = False
+        for box in results[0].boxes:
+            cls = int(box.cls[0])
+            label = model.model.names[cls]
+            if label == "cell phone":
+                detected = True
+                break
 
-        # Danger logic
-        if phone_detected:
-            if phone_detected_start is None:
-                phone_detected_start = time.time()
-            elif time.time() - phone_detected_start >= DETECTION_THRESHOLD:
-                flicker_html = """
-                <style>
-                .flicker-box {
-                    background-color: red;
-                    color: white;
-                    padding: 50px;
-                    text-align: center;
-                    font-size: 32px;
-                    font-weight: bold;
-                    animation: flicker 0.5s infinite alternate;
-                }
-                @keyframes flicker {
-                    from {opacity: 1;}
-                    to {opacity: 0.2;}
-                }
-                </style>
-                <div class="flicker-box">🚨 DANGER: Mobile Phone Detected! 🚨</div>
-                """
-                alert_box.markdown(flicker_html, unsafe_allow_html=True)
+        if detected:
+            if st.session_state.detection_start_time is None:
+                st.session_state.detection_start_time = time.time()
+            elif time.time() - st.session_state.detection_start_time >= 3:
+                if not st.session_state.alarm_playing:
+                    pygame.mixer.music.play()
+                    st.session_state.alarm_playing = True
         else:
-            phone_detected_start = None
-            alert_box.empty()
+            st.session_state.detection_start_time = None
+            if st.session_state.alarm_playing:
+                pygame.mixer.music.stop()
+                st.session_state.alarm_playing = False
 
-        # Show video
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        stframe.image(frame_rgb, channels="RGB")
+        stframe.image(annotated_frame, channels="BGR")
 
     cap.release()
-
-# Control buttons
-if not st.session_state.detecting:
-    if st.button("▶ Start Detection"):
-        st.session_state.detecting = True
-        detect_mobile()
 else:
-    if st.button("⏹ Stop Detection"):
-        st.session_state.detecting = False
-        st.success("Detection stopped.")
+    stframe.text("Detection stopped. Click 'Start Detection' to begin.")
